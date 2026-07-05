@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DeepRobin — depth of field with AI, in your browser</title>
+<style>
+  :root{
+    --bg:#0d0e11; --panel:#131519; --panel-2:#171a1f; --stage:#08090b; --plate:#000;
+    --ink:#ecebe5; --dim:#8b8a83; --faint:#585a61;
+    --line:#21242b; --line-2:#2c2f37;
+    --accent:#6d78f0; --accent-soft:rgba(109,120,240,.14);
+    --ok:#45bd7b;
+    --mono:ui-monospace,"SF Mono",Menlo,"Cascadia Mono","Roboto Mono",monospace;
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;min-height:100dvh;font-size:14px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  button{font-family:inherit}
+
+  /* ---------- top bar + process timeline (signature) ---------- */
+  .top{display:flex;align-items:center;gap:26px;padding:15px 26px;border-bottom:1px solid var(--line);flex:none}
+  .wordmark{display:flex;align-items:center;gap:10px;flex:none}
+  .wordmark .dot{width:11px;height:11px;border-radius:50%;border:1.5px solid var(--ink);position:relative}
+  .wordmark .dot::after{content:"";position:absolute;inset:2.5px;border-radius:50%;background:var(--accent)}
+  .wordmark h1{font-size:14px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;margin:0}
+
+  .timeline{display:flex;align-items:center;gap:0;flex:1;max-width:560px}
+  .node{display:flex;align-items:center;gap:9px;cursor:pointer;opacity:.5;transition:opacity .2s;background:none;border:0;padding:4px 0}
+  .node[disabled]{cursor:not-allowed}
+  .node.on{opacity:1}
+  .node .num{font-family:var(--mono);font-size:10px;width:20px;height:20px;border-radius:50%;
+    border:1px solid var(--line-2);display:grid;place-items:center;color:var(--dim);transition:.2s}
+  .node.on .num{border-color:var(--accent);color:var(--accent)}
+  .node.done .num{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+  .node .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .node.on .lbl{color:var(--ink)}
+  .rule{flex:1;height:1px;background:var(--line);margin:0 14px;min-width:18px}
+  .top .end{margin-left:auto;display:flex;gap:8px;flex:none;align-items:center}
+  .privacy-badge{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:20px;padding:6px 12px}
+  .privacy-badge svg{width:11px;height:11px;color:var(--ok)}
+  .link-btn{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+    background:none;border:1px solid var(--line);border-radius:20px;padding:7px 15px;cursor:pointer;transition:.15s}
+  .link-btn:hover{color:var(--ink);border-color:var(--line-2)}
+
+  /* ---------- layout ---------- */
+  main{flex:1;display:flex;min-height:0}
+  .stage{flex:1;min-width:0;position:relative;display:flex;align-items:center;justify-content:center;
+    padding:34px;background:var(--stage);overflow:hidden}
+  .frame{position:relative;line-height:0;max-width:100%;max-height:100%}
+  canvas.view{max-width:100%;max-height:calc(100dvh - 168px);display:block;
+    box-shadow:0 0 0 1px var(--line-2),0 40px 80px -40px rgba(0,0,0,.9)}
+  #overlay{position:absolute;left:0;top:0;pointer-events:none;opacity:0;transition:opacity .18s}
+  #overlay.semi{opacity:.6}
+  #overlay.full{opacity:1}
+  .stage.paint canvas.view{cursor:none}
+  .stage.focus canvas.view{cursor:crosshair}
+
+  /* dropzone / empty */
+  .drop{width:min(540px,88%);border:1px dashed var(--line-2);border-radius:4px;background:var(--panel);
+    padding:56px 46px;text-align:center;transition:.18s;line-height:normal}
+  .drop.hot{border-color:var(--accent);background:var(--accent-soft)}
+  .drop h2{font-size:20px;font-weight:600;margin:0 0 12px;letter-spacing:-.01em;line-height:1.35}
+  .drop p{color:var(--dim);margin:0 auto 12px;max-width:380px;line-height:1.65;font-size:13.5px}
+  .drop .priv{color:var(--faint);font-family:var(--mono);font-size:11px;letter-spacing:.02em;margin:0 auto 24px;
+    display:flex;align-items:center;gap:8px;justify-content:center}
+  .drop .priv svg{width:12px;height:12px;color:var(--ok);flex:none}
+  .drop .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+
+  .btn{font-size:13px;font-weight:500;padding:11px 20px;border-radius:3px;cursor:pointer;transition:.15s;border:1px solid transparent}
+  .btn-solid{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+  .btn-solid:hover{background:#fff;border-color:#fff}
+  .btn-solid:disabled{opacity:.32;cursor:not-allowed}
+  .btn-ghost{background:transparent;color:var(--ink);border-color:var(--line-2)}
+  .btn-ghost:hover{border-color:var(--ink)}
+
+  .brushcur{position:absolute;border-radius:50%;pointer-events:none;opacity:0;
+    transform:translate(-50%,-50%);
+    border:1.5px solid rgba(255,255,255,.95);
+    box-shadow:0 0 0 1.5px rgba(0,0,0,.55),inset 0 0 0 1.5px rgba(0,0,0,.35)}
+  .brushcur::after{content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;border-radius:50%;
+    transform:translate(-50%,-50%);background:rgba(255,255,255,.95);box-shadow:0 0 0 1px rgba(0,0,0,.5)}
+  .stage.paint .brushcur.on{opacity:1}
+  .reticle{position:absolute;width:48px;height:48px;margin:-24px 0 0 -24px;pointer-events:none;opacity:0;transition:opacity .2s}
+  .reticle.on{opacity:1}
+  .reticle .ring{position:absolute;inset:0;border:1.5px solid rgba(255,255,255,.95);border-radius:50%;
+    box-shadow:0 0 0 1.5px rgba(0,0,0,.55),inset 0 0 0 1.5px rgba(0,0,0,.35)}
+  .reticle::before{content:"";position:absolute;left:50%;top:8px;bottom:8px;width:1.5px;background:rgba(255,255,255,.95);
+    transform:translateX(-.75px);box-shadow:0 0 0 1px rgba(0,0,0,.45)}
+  .reticle::after{content:"";position:absolute;top:50%;left:8px;right:8px;height:1.5px;background:rgba(255,255,255,.95);
+    transform:translateY(-.75px);box-shadow:0 0 0 1px rgba(0,0,0,.45)}
+  @keyframes lock{0%{transform:scale(1.5);opacity:0}60%{opacity:1}100%{transform:scale(1)}}
+  .reticle.pulse{animation:lock .3s ease-out}
+
+  .stagehint{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);font-family:var(--mono);
+    font-size:11px;color:var(--dim);background:rgba(13,14,17,.82);border:1px solid var(--line-2);
+    padding:7px 15px;border-radius:20px;letter-spacing:.02em;backdrop-filter:blur(6px);
+    pointer-events:none;transition:.2s;white-space:nowrap}
+
+  /* ---------- panel ---------- */
+  .panel{width:340px;flex:none;border-left:1px solid var(--line);background:var(--panel);
+    display:flex;flex-direction:column;overflow-y:auto}
+  .step{display:none;flex-direction:column}
+  .step.show{display:flex}
+  .sec{padding:22px 24px;border-bottom:1px solid var(--line)}
+  .sec:last-child{border-bottom:none}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 10px}
+  .lead{font-size:15px;font-weight:600;letter-spacing:-.01em;margin:0 0 8px}
+  .body{color:var(--dim);line-height:1.65;font-size:13px;margin:0}
+  .body + .body{margin-top:9px}
+  .body b{color:var(--ink);font-weight:600}
+
+  .privnote{display:flex;gap:9px;align-items:flex-start;margin-top:14px;padding:11px 12px;border:1px solid var(--line-2);
+    border-radius:4px;background:var(--panel-2)}
+  .privnote svg{width:13px;height:13px;color:var(--ok);flex:none;margin-top:1px}
+  .privnote span{font-size:12px;color:var(--dim);line-height:1.55}
+
+  .field{margin-top:16px}
+  .flabel{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px}
+  .flabel .n{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+  .flabel .v{font-family:var(--mono);font-size:11px;color:var(--accent)}
+
+  .slider{width:100%;-webkit-appearance:none;appearance:none;height:20px;background:transparent;cursor:pointer}
+  .slider::-webkit-slider-runnable-track{height:2px;background:var(--line-2);border-radius:2px}
+  .slider::-moz-range-track{height:2px;background:var(--line-2);border-radius:2px}
+  .slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;
+    background:var(--ink);margin-top:-6px;transition:.12s}
+  .slider::-webkit-slider-thumb:hover{background:var(--accent)}
+  .slider::-moz-range-thumb{width:13px;height:13px;border:0;border-radius:50%;background:var(--ink)}
+  .depthgrad::-webkit-slider-runnable-track{height:4px;border-radius:3px;background:linear-gradient(90deg,#000,#e9e9e9)}
+  .depthgrad::-moz-range-track{height:4px;border-radius:3px;background:linear-gradient(90deg,#000,#e9e9e9)}
+  .hint{font-family:var(--mono);font-size:9.5px;color:var(--faint);display:flex;justify-content:space-between;margin-top:3px;letter-spacing:.02em}
+
+  .seg{display:flex;border:1px solid var(--line-2);border-radius:4px;overflow:hidden;margin-top:4px}
+  .seg button{flex:1;background:transparent;border:none;color:var(--dim);font-family:var(--mono);font-size:11px;
+    letter-spacing:.03em;padding:9px 4px;cursor:pointer;transition:.13s;border-right:1px solid var(--line-2)}
+  .seg button:last-child{border-right:none}
+  .seg button.on{background:var(--ink);color:var(--bg)}
+  .seg button:hover:not(.on){color:var(--ink)}
+
+  /* aperture barrel */
+  .barrel{position:relative;user-select:none;padding:2px 2px 0;margin-top:4px}
+  .barrel .stops{display:flex;justify-content:space-between}
+  .barrel .stop{font-family:var(--mono);font-size:11px;color:var(--faint);cursor:pointer;padding:5px 2px 9px;
+    transition:color .14s;text-align:center;flex:1}
+  .barrel .stop:hover{color:var(--dim)}
+  .barrel .stop.sel{color:var(--accent)}
+  .barrel .track{height:1px;background:var(--line-2);position:relative;margin-top:2px}
+  .notch{position:absolute;top:-4px;width:2px;height:13px;background:var(--accent);border-radius:1px;
+    transition:left .18s cubic-bezier(.3,.8,.3,1);transform:translateX(-1px)}
+
+  .tools{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:14px}
+  .tools button{font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;text-transform:uppercase;padding:9px 4px;
+    border-radius:3px;cursor:pointer;border:1px solid var(--line-2);background:transparent;color:var(--dim);transition:.13s}
+  .tools button:hover{color:var(--ink);border-color:var(--ink)}
+
+  .collapse{border-top:1px solid var(--line);margin-top:2px}
+  .collapse > summary{list-style:none;cursor:pointer;padding:16px 24px;font-family:var(--mono);font-size:11px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--dim);display:flex;justify-content:space-between;align-items:center}
+  .collapse > summary::-webkit-details-marker{display:none}
+  .collapse > summary::after{content:"";width:7px;height:7px;border-right:1.5px solid var(--faint);
+    border-bottom:1.5px solid var(--faint);transform:rotate(45deg);transition:transform .2s;margin-bottom:2px}
+  .collapse[open] > summary::after{transform:rotate(-135deg);margin-bottom:-3px}
+  .collapse > summary:hover{color:var(--ink)}
+  .collapse .inner{padding:0 24px 22px}
+
+  .actions{padding:20px 24px;border-top:1px solid var(--line);display:flex;gap:10px}
+  .actions .btn{flex:1;text-align:center}
+
+  /* ---------- model status card ---------- */
+  .model{border:1px solid var(--line-2);border-radius:4px;padding:14px;background:var(--panel-2);margin-top:16px}
+  .model .st{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:500}
+  .model .st .spark{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+  .model.run .st .spark,.model.dl .st .spark{background:var(--accent);animation:pulse 1.1s ease-in-out infinite}
+  .model.ok .st .spark{background:var(--ok)}
+  .model.err .st .spark{background:#e06a5a}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .model .sub{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:8px;line-height:1.6;letter-spacing:.01em}
+  .bar{height:3px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:11px;display:none}
+  .model.run .bar,.model.dl .bar{display:block}
+  .bar .fill{height:100%;background:var(--accent);width:0%;transition:width .2s}
+  .bar.indet .fill{width:35%;animation:slide 1.1s ease-in-out infinite}
+  @keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+
+  /* ---------- about modal ---------- */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.66);display:none;align-items:center;justify-content:center;
+    padding:24px;z-index:50;backdrop-filter:blur(4px)}
+  .modal.show{display:flex}
+  .card{background:var(--panel);border:1px solid var(--line-2);border-radius:6px;max-width:560px;width:100%;
+    max-height:86dvh;overflow-y:auto;padding:34px 36px;
+    scrollbar-width:thin;scrollbar-color:var(--line-2) transparent}
+  .card::-webkit-scrollbar{width:9px}
+  .card::-webkit-scrollbar-track{background:transparent}
+  .card::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:5px;border:2px solid var(--panel);background-clip:padding-box}
+  .card::-webkit-scrollbar-thumb:hover{background:var(--faint);border:2px solid var(--panel);background-clip:padding-box}
+  .card h3{font-size:18px;margin:0 0 4px;letter-spacing:-.01em}
+  .card .k{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-bottom:18px}
+  .card p{color:var(--dim);line-height:1.7;font-size:13.5px;margin:0 0 14px}
+  .card p b{color:var(--ink)}
+  .card h4{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);margin:22px 0 8px}
+  .card ul{margin:0;padding-left:0;list-style:none}
+  .card li{color:var(--dim);line-height:1.75;font-size:13px;padding-left:16px;position:relative;margin-bottom:4px}
+  .card li::before{content:"—";position:absolute;left:0;color:var(--faint)}
+  .card li b{color:var(--ink)}
+  .card .close{float:right;background:none;border:1px solid var(--line-2);border-radius:20px;padding:6px 14px;
+    font-family:var(--mono);font-size:11px;color:var(--dim);cursor:pointer;text-transform:uppercase;letter-spacing:.06em}
+  .card .close:hover{color:var(--ink);border-color:var(--ink)}
+  .card .privacy-box{border:1px solid var(--line-2);border-radius:5px;background:var(--panel-2);padding:16px 18px;margin:6px 0 4px}
+  .card .privacy-box h4{margin-top:0;display:flex;align-items:center;gap:8px}
+  .card .privacy-box h4 svg{width:13px;height:13px;color:var(--ok)}
+
+  input[type=file]{display:none}
+
+  @media (max-width:900px){
+    main{flex-direction:column}
+    .panel{width:100%;border-left:none;border-top:1px solid var(--line)}
+    canvas.view{max-height:48dvh}
+    .timeline,.privacy-badge{display:none}
+    .stage{padding:18px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="wordmark"><span class="dot"></span><h1>DeepRobin</h1></div>
+  <div class="timeline" id="timeline">
+    <button class="node on" data-step="1" id="node1"><span class="num">01</span><span class="lbl">Photo</span></button>
+    <span class="rule"></span>
+    <button class="node" data-step="2" id="node2" disabled><span class="num">02</span><span class="lbl">Depth</span></button>
+    <span class="rule"></span>
+    <button class="node" data-step="3" id="node3" disabled><span class="num">03</span><span class="lbl">Focus</span></button>
+  </div>
+  <div class="end">
+    <span class="privacy-badge">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      100% on-device
+    </span>
+    <button class="link-btn" id="btnAbout">About</button>
+  </div>
+</div>
+
+<main>
+  <div class="stage focus" id="stage">
+    <div class="frame" id="frame">
+      <div class="drop" id="drop">
+        <h2>Depth of field, computed in your browser</h2>
+        <p>Upload a photo. An AI estimates the scene's depth right here — with no servers — and we use that black-and-white map to apply a realistic optical blur.</p>
+        <p class="priv">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+          No account. No uploads. Your photos never leave your device.
+        </p>
+        <div class="row">
+          <button class="btn btn-solid" id="btnOpen1">Upload photo</button>
+        </div>
+      </div>
+      <canvas class="view" id="cv" style="display:none"></canvas>
+      <canvas id="overlay"></canvas>
+      <div class="brushcur" id="brushcur"></div>
+      <div class="reticle" id="reticle"><div class="ring"></div></div>
+      <div class="stagehint" id="stagehint" style="opacity:0"></div>
+    </div>
+  </div>
+
+  <aside class="panel" id="panel">
+
+    <!-- STEP 1 -->
+    <div class="step show" id="step1">
+      <div class="sec">
+        <p class="kicker">01 — Photo</p>
+        <p class="lead">Start with an image</p>
+        <p class="body">Works best with a clear subject and a background at some distance: portraits, objects, streets. Everything happens on your device.</p>
+        <div class="privnote">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+          <span>No sign-up and no personal data required. Your photo is processed locally and is never uploaded or stored.</span>
+        </div>
+        <div class="field">
+          <button class="btn btn-solid" id="btnOpen2" style="width:100%">Upload photo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 2 -->
+    <div class="step" id="step2">
+      <div class="sec">
+        <p class="kicker">02 — Depth</p>
+        <p class="lead">Estimate depth with AI</p>
+        <p class="body">A model (Depth Anything V2) analyzes the photo and produces a black-and-white map: <b>dark is near</b>, <b>light is far</b>. That map is what tells the blur what to separate.</p>
+        <div class="model" id="model">
+          <div class="st"><span class="spark"></span><span id="mSt">Ready to analyze</span></div>
+          <div class="sub" id="mSub">The model (~30&nbsp;MB) downloads only the first time and is cached in your browser. Instant afterwards. Runs fully on your device.</div>
+          <div class="bar" id="mBar"><div class="fill" id="mFill"></div></div>
+        </div>
+        <div class="field">
+          <button class="btn btn-solid" id="btnDepth" style="width:100%">Analyze depth</button>
+        </div>
+        <div class="field">
+          <div class="seg" id="viewSeg">
+            <button data-v="photo" class="on">Photo</button>
+            <button data-v="depth">Depth</button>
+          </div>
+        </div>
+      </div>
+
+      <details class="collapse" id="refineWrap">
+        <summary>Refine by hand</summary>
+        <div class="inner">
+          <p class="body" style="margin-bottom:14px">The AI is right most of the time, but can miss hair, glass or fine edges. Paint to fix it: dark = near, light = far.</p>
+          <div class="flabel"><span class="n">Brush depth</span><span class="v" id="depthVal">mid</span></div>
+          <input type="range" class="slider depthgrad" id="depth" min="2" max="98" value="55">
+          <div class="hint"><span>near</span><span>far</span></div>
+          <div class="flabel" style="margin-top:16px"><span class="n">Size</span><span class="v" id="sizeVal">60</span></div>
+          <input type="range" class="slider" id="bsize" min="8" max="240" value="60">
+          <div class="flabel" style="margin-top:14px"><span class="n">Hardness</span><span class="v" id="hardVal">medium</span></div>
+          <input type="range" class="slider" id="bhard" min="5" max="98" value="55">
+          <div class="tools">
+            <button id="btnPaintOn">Enable brush</button>
+            <button id="btnInvert">Invert map</button>
+            <button id="btnSmooth">Smooth</button>
+            <button id="btnUndo">Undo</button>
+          </div>
+        </div>
+      </details>
+
+      <div class="actions">
+        <button class="btn btn-solid" id="btnToFocus" style="flex:1">Continue to focus →</button>
+      </div>
+    </div>
+
+    <!-- STEP 3 -->
+    <div class="step" id="step3">
+      <div class="sec">
+        <p class="kicker">03 — Focus</p>
+        <p class="lead">Pick the plane, open the aperture</p>
+        <p class="body">Tap what you want sharp. Anything nearer or farther — according to the map — goes out of focus. Open the aperture for more blur.</p>
+      </div>
+      <div class="sec">
+        <div class="flabel"><span class="n">Aperture</span><span class="v" id="apVal">f/2.8</span></div>
+        <div class="barrel" id="barrel"><div class="stops" id="stops"></div><div class="track"><div class="notch" id="notch"></div></div></div>
+        <div class="hint"><span>more blur</span><span>all sharp</span></div>
+
+        <div class="field">
+          <div class="flabel"><span class="n">Focus plane</span><span class="v" id="focusVal">— tap the photo</span></div>
+        </div>
+        <div class="field">
+          <div class="flabel"><span class="n">Preview</span></div>
+          <div class="seg" id="zoneSeg">
+            <button data-z="0" class="on">Image</button>
+            <button data-z="1">Sharp zone</button>
+          </div>
+          <div class="hint" style="margin-top:6px"><span>sharp zone = what stays in focus</span></div>
+        </div>
+        <div class="field">
+          <div class="flabel"><span class="n">Sharp zone</span><span class="v" id="rangeVal">0%</span></div>
+          <input type="range" class="slider" id="range" min="0" max="40" value="0">
+        </div>
+        <div class="field">
+          <div class="flabel"><span class="n">Transition</span><span class="v" id="fallVal">soft</span></div>
+          <input type="range" class="slider" id="fall" min="60" max="320" value="150">
+        </div>
+      </div>
+      <div class="sec">
+        <div class="flabel"><span class="n">Bokeh · highlights</span><span class="v" id="hlVal">medium</span></div>
+        <input type="range" class="slider" id="hl" min="0" max="120" value="45">
+        <div class="hint"><span>flat</span><span>bright orbs</span></div>
+        <div class="field">
+          <div class="flabel"><span class="n">Aperture shape</span></div>
+          <div class="seg" id="bladeSeg">
+            <button data-b="0" class="on">Circle</button>
+            <button data-b="6">Hexagon</button>
+            <button data-b="5">Pentagon</button>
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost" id="btnCompare" style="flex:1">Compare</button>
+        <button class="btn btn-solid" id="btnSave" style="flex:1">Save PNG</button>
+      </div>
+    </div>
+
+  </aside>
+</main>
+
+<!-- ABOUT / REFERENCES -->
+<div class="modal" id="modal">
+  <div class="card">
+    <button class="close" id="btnClose">Close</button>
+    <p class="k">About · references · privacy</p>
+    <h3>DeepRobin</h3>
+    <p>A tool that estimates the depth of a photo and simulates the blur of a fast lens. Depth estimation runs <b>entirely in your browser</b>. The blur is computed in WebGL as a disc sampling in linear light, with background highlights blooming into bokeh.</p>
+
+    <div class="privacy-box">
+      <h4><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg> Privacy</h4>
+      <ul>
+        <li><b>No account, no personal data.</b> The app never asks who you are.</li>
+        <li><b>No uploads.</b> Your photos are processed in your browser and are never sent to, or stored on, any server.</li>
+        <li><b>Nothing is kept.</b> Images live only in this tab and disappear when you close it.</li>
+        <li><b>Only one network request:</b> a one-time download of the open depth model, which is then cached on your device.</li>
+      </ul>
+    </div>
+
+    <h4>Depth model</h4>
+    <ul>
+      <li><b>Depth Anything V2</b> — the model that makes single-image depth possible. Thanks to its authors for open-sourcing the work: <a href="https://github.com/DepthAnything/Depth-Anything-V2" target="_blank" rel="noopener">github.com/DepthAnything/Depth-Anything-V2</a></li>
+      <li>Browser-ready ONNX build, packaged by the community: <a href="https://huggingface.co/onnx-community/depth-anything-v2-small" target="_blank" rel="noopener">onnx-community/depth-anything-v2-small</a></li>
+    </ul>
+
+    <h4>In-browser runtime</h4>
+    <ul>
+      <li><b>Transformers.js</b> (Hugging Face) — runs the model with WebGPU or WASM, no server: <a href="https://github.com/huggingface/transformers.js" target="_blank" rel="noopener">github.com/huggingface/transformers.js</a></li>
+    </ul>
+
+    <h4>Acknowledgements</h4>
+    <p>To the Depth Anything team for the model and research, to the Hugging Face community for the ONNX port and Transformers.js, and to everyone documenting the optics of bokeh and depth of field. This project only connects those pieces.</p>
+  </div>
+</div>
+
+<input type="file" id="file" accept="image/*">
+
+<script>
+"use strict";
+/* =========================================================================
+   DeepRobin — integrated depth-of-field
+   1) upload photo  2) AI estimates depth (transformers.js, in the browser)
+   3) focus + optical blur (WebGL, linear light, bokeh)
+   The B/W depth map (near=dark) drives the DoF shader.
+   ========================================================================= */
+
+const TRANSFORMERS_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js";
+const MODEL_ID = "onnx-community/depth-anything-v2-small";
+
+/* ---------- WebGL DoF engine ---------- */
+const cv=document.getElementById('cv');
+const gl=cv.getContext('webgl',{preserveDrawingBuffer:true,premultipliedAlpha:false,antialias:false});
+const overlay=document.getElementById('overlay');
+const octx=overlay.getContext('2d');
+
+const VERT=`attribute vec2 p;varying vec2 uv;
+void main(){uv=vec2(p.x*.5+.5,.5-p.y*.5);gl_Position=vec4(p,0.,1.);}`;
+const FRAG=`
+precision highp float;
+varying vec2 uv;
+uniform sampler2D img; uniform sampler2D depthTex;
+uniform vec2 res; uniform float maxCoC; uniform float focusZ; uniform float rangeZ;
+uniform float falloff; uniform float highlight; uniform float blades; uniform float bypass; uniform float zone;
+const int N=64; const float GOLDEN=2.399963229; const float PI=3.14159265;
+vec3 toLin(vec3 c){return pow(c,vec3(2.2));}
+vec3 toSRGB(vec3 c){return pow(max(c,0.0),vec3(1.0/2.2));}
+float cocAt(vec2 u){
+  float z=texture2D(depthTex,u).r;
+  // dither: breaks the 8-bit quantization of the depth map so blur varies
+  // continuously instead of stepping in visible depth "slabs"
+  z+=(fract(sin(dot(u*res,vec2(127.1,311.7)))*43758.5453)-0.5)*(1.5/255.0);
+  float d=abs(z-focusZ);
+  float t=max(0.0,d-rangeZ); float n=t/max(1e-4,(1.0-rangeZ));
+  return maxCoC*pow(clamp(n,0.0,1.0),falloff);
+}
+float apR(float a){ if(blades<3.0)return 1.0; float s=2.0*PI/blades; float h=cos(PI/blades); return h/cos(mod(a,s)-s*0.5); }
+void main(){
+  vec3 center=toLin(texture2D(img,uv).rgb);
+  float cC=cocAt(uv);
+  if(bypass>0.5){gl_FragColor=vec4(toSRGB(center),1.0);return;}
+  // DoF-preview: show exactly what will stay sharp (monochrome dim elsewhere)
+  if(zone>0.5){
+    float sharpMask=1.0-smoothstep(0.5,2.5,cC);
+    vec3 dimmed=vec3(dot(center,vec3(.299,.587,.114)))*0.16;
+    gl_FragColor=vec4(toSRGB(mix(dimmed,center,sharpMask)),1.0);return;
+  }
+  if(cC<0.15){gl_FragColor=vec4(toSRGB(center),1.0);return;}
+  vec3 acc=vec3(0.0); float ws=0.0;
+  for(int i=0;i<N;i++){
+    float fi=(float(i)+0.5)/float(N); float rr=sqrt(fi); float a=float(i)*GOLDEN;
+    vec2 off=vec2(cos(a),sin(a))*rr*apR(a)*cC;
+    vec2 su=uv+off/res;
+    vec3 c=toLin(texture2D(img,su).rgb);
+    float sC=cocAt(su); float dist=length(off);
+    // scatter-as-gather: a sample only reaches this pixel if this pixel falls inside
+    // the sample's OWN circle of confusion. A sharp sample (sC~0) covers ~0px, so it
+    // cannot bleed into a blurred neighbour -> no halo around the subject.
+    float cov=smoothstep(sC+0.75,sC-0.75,dist);
+    float lum=max(max(c.r,c.g),c.b);
+    float w=cov*(1.0+highlight*pow(lum,4.0));
+    acc+=c*w; ws+=w;
+  }
+  vec3 col=ws>0.0?acc/ws:center;
+  // continuous ramp from sharp to blurred: kills the visible sharp/blur boundary
+  col=mix(center,col,smoothstep(0.15,1.2,cC));
+  gl_FragColor=vec4(toSRGB(col),1.0);
+}`;
+function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(o);return o;}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);gl.useProgram(prog);
+const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+const pl=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(pl);gl.vertexAttribPointer(pl,2,gl.FLOAT,false,0,0);
+const U={};['res','maxCoC','focusZ','rangeZ','falloff','highlight','blades','bypass','zone','img','depthTex'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+const imgTex=gl.createTexture(), depthTex=gl.createTexture();
+gl.uniform1i(U.img,0);gl.uniform1i(U.depthTex,1);
+
+const depthCanvas=document.createElement('canvas');
+const dctx=depthCanvas.getContext('2d',{willReadFrequently:true});
+
+const S={maxCoC:22,focusZ:0.6,rangeZ:0,falloff:1.5,highlight:0.45,blades:0,bypass:0,zone:0,loaded:false};
+const brush={size:60,hard:0.55,depth:0.55};
+let step=1, mode='focus', paintEnabled=false, viewMode='photo';
+let workingBlobURL=null;
+
+const STOPS=[{f:'1.4',coc:40},{f:'2',coc:30},{f:'2.8',coc:22},{f:'4',coc:15},{f:'5.6',coc:10},{f:'8',coc:6},{f:'11',coc:3},{f:'16',coc:0.8}];
+let apIndex=2;
+
+function render(){
+  if(!S.loaded)return;
+  gl.viewport(0,0,cv.width,cv.height);
+  gl.uniform2f(U.res,cv.width,cv.height);
+  gl.uniform1f(U.maxCoC,S.maxCoC);gl.uniform1f(U.focusZ,S.focusZ);gl.uniform1f(U.rangeZ,S.rangeZ);
+  gl.uniform1f(U.falloff,S.falloff);gl.uniform1f(U.highlight,S.highlight);gl.uniform1f(U.blades,S.blades);
+  gl.uniform1f(U.zone, step===3 ? S.zone : 0);
+  gl.uniform1f(U.bypass, step!==3 ? 1 : S.bypass);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+function uploadDepth(){
+  gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,depthTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,depthCanvas);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.activeTexture(gl.TEXTURE0);
+}
+function refreshOverlay(alpha){
+  octx.clearRect(0,0,overlay.width,overlay.height);
+  octx.drawImage(depthCanvas,0,0);
+  overlay.classList.remove('semi','full');
+  if(alpha==='full')overlay.classList.add('full');
+  else if(alpha==='semi')overlay.classList.add('semi');
+}
+
+const MAXDIM=(window.devicePixelRatio>1.5&&Math.min(screen.width,screen.height)<800)?1024:1400;
+function loadBitmap(src){
+  let w=src.width||src.naturalWidth,h=src.height||src.naturalHeight;
+  const sc=Math.min(1,MAXDIM/Math.max(w,h));w=Math.round(w*sc);h=Math.round(h*sc);
+  const c=document.createElement('canvas');c.width=w;c.height=h;
+  c.getContext('2d').drawImage(src,0,0,w,h);
+  cv.width=w;cv.height=h;overlay.width=w;overlay.height=h;depthCanvas.width=w;depthCanvas.height=h;
+  dctx.fillStyle='rgb(150,150,150)';dctx.fillRect(0,0,w,h);          // neutral base until AI/brush acts
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,imgTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  uploadDepth();
+  S.loaded=true;undoStack.length=0;depthReady=false;
+  document.getElementById('drop').style.display='none';
+  cv.style.display='block';overlay.style.display='block';
+  if(workingBlobURL)URL.revokeObjectURL(workingBlobURL);
+  c.toBlob(b=>{workingBlobURL=URL.createObjectURL(b);},'image/png');
+  unlockSteps();goStep(2);syncOverlaySize();
+}
+
+/* ---------- demo scene ---------- */
+function buildDemo(){
+  const w=1400,h=1000,c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');
+  const g=x.createLinearGradient(0,0,0,h);g.addColorStop(0,'#0a1226');g.addColorStop(.55,'#111a30');g.addColorStop(1,'#1a1410');
+  x.fillStyle=g;x.fillRect(0,0,w,h);
+  const cols=['#ffd9a0','#ffe8c2','#a9d4ff','#fff4e0','#ffcf87','#c6b3ff'];
+  for(let i=0;i<90;i++){const px=Math.random()*w,py=Math.random()*h*.82,r=2+Math.random()*7,col=cols[i%6];
+    const rg=x.createRadialGradient(px,py,0,px,py,r*2.4);rg.addColorStop(0,col);rg.addColorStop(.4,col);rg.addColorStop(1,'rgba(0,0,0,0)');
+    x.globalCompositeOperation='lighter';x.fillStyle=rg;x.beginPath();x.arc(px,py,r*2.4,0,7);x.fill();}
+  x.globalCompositeOperation='source-over';
+  const cx=w/2,cy=h/2+30,R=190;x.save();x.translate(cx,cy);x.shadowColor='rgba(0,0,0,.6)';x.shadowBlur=40;
+  x.fillStyle='#14171d';x.beginPath();x.arc(0,0,R,0,7);x.fill();x.shadowBlur=0;
+  const bl=8;for(let i=0;i<bl;i++){x.rotate(2*Math.PI/bl);const grd=x.createLinearGradient(-R,0,R,0);
+    grd.addColorStop(0,'#3a4150');grd.addColorStop(.5,'#5a6478');grd.addColorStop(1,'#2b313c');x.fillStyle=grd;
+    x.beginPath();x.moveTo(-R*.14,-R*.98);x.arc(0,0,R,-Math.PI/2-.02,-Math.PI/2+2*Math.PI/bl+.14);x.lineTo(-R*.14,-R*.98);x.closePath();x.fill();
+    x.strokeStyle='rgba(0,0,0,.35)';x.lineWidth=2;x.stroke();}
+  x.fillStyle='#e9edf5';x.beginPath();x.arc(0,0,R*.2,0,7);x.fill();
+  const hl=x.createRadialGradient(-R*.06,-R*.06,0,0,0,R*.2);hl.addColorStop(0,'#fff');hl.addColorStop(1,'#b9c2d4');
+  x.fillStyle=hl;x.beginPath();x.arc(0,0,R*.2,0,7);x.fill();x.restore();
+  const img=new Image();img.onload=()=>loadBitmap(img);img.src=c.toDataURL();
+}
+
+/* ---------- depth map from an image/canvas ---------- */
+function applyDepthImage(srcCanvas, invert){
+  const w=depthCanvas.width,h=depthCanvas.height;
+  const t=document.createElement('canvas');t.width=w;t.height=h;const tx=t.getContext('2d');
+  tx.drawImage(srcCanvas,0,0,w,h);
+  const id=tx.getImageData(0,0,w,h),d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    let g=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+    if(invert)g=255-g;
+    d[i]=d[i+1]=d[i+2]=g;d[i+3]=255;
+  }
+  tx.putImageData(id,0,0);
+  dctx.clearRect(0,0,w,h);dctx.drawImage(t,0,0);
+  uploadDepth();
+  if(viewMode==='depth')refreshOverlay('full');
+}
+
+/* ---------- transformers.js depth estimation (runs on your device) ---------- */
+let depthPipe=null, depthBackend='', depthReady=false;
+function fmtMB(b){return (b/1048576).toFixed(1);}
+function setModel(cls,st,sub){
+  const m=document.getElementById('model');
+  m.className='model'+(cls?(' '+cls):'');
+  if(st!=null)document.getElementById('mSt').textContent=st;
+  if(sub!=null)document.getElementById('mSub').innerHTML=sub;
+}
+function setBar(pct,indet){
+  const bar=document.getElementById('mBar'),fill=document.getElementById('mFill');
+  bar.classList.toggle('indet',!!indet);
+  if(indet)fill.style.width='';else fill.style.width=(pct||0)+'%';
+}
+function onProgress(p){
+  if(!p||!p.status)return;
+  if(p.status==='progress'){
+    const pct=p.total?Math.round((p.loaded/p.total)*100):(p.progress?Math.round(p.progress):0);
+    setModel('dl','Downloading model — '+pct+'%',
+      (p.file?('<span style="opacity:.8">'+p.file+'</span> · '):'')+(p.total?(fmtMB(p.loaded)+' / '+fmtMB(p.total)+' MB'):'')+' · cached after this');
+    setBar(pct,false);
+  }else if(p.status==='initiate'){
+    setModel('dl','Downloading model…',(p.file||'')+' · first time only');setBar(2,false);
+  }
+}
+async function pickDevice(){
+  if(navigator.gpu){try{const a=await navigator.gpu.requestAdapter();if(a)return 'webgpu';}catch(e){}}
+  return 'wasm';
+}
+async function ensureModel(){
+  if(depthPipe)return depthPipe;
+  let mod;
+  setModel('run','Loading AI engine…','Importing the library (one time only).');setBar(0,true);
+  try{ mod=await import(TRANSFORMERS_URL); }
+  catch(e){ throw new Error('Could not load the AI library (offline or blocked?). You can still mark depth by hand.'); }
+  const { pipeline, env }=mod;
+  env.allowLocalModels=false;
+  try{ env.backends.onnx.wasm.numThreads=1; }catch(e){}
+  const device=await pickDevice();
+  const dtype=device==='webgpu'?'fp16':'q8';
+  setModel('run',device==='webgpu'?'Preparing · WebGPU engine':'Preparing · CPU engine',
+    device==='webgpu'?'WebGPU available: this will be fast.':'No WebGPU: using CPU (WASM). May take a few seconds per photo.');
+  try{
+    depthPipe=await pipeline('depth-estimation',MODEL_ID,{device,dtype,progress_callback:onProgress});
+    depthBackend=device;
+  }catch(err){
+    if(device==='webgpu'){
+      setModel('run','WebGPU failed · switching to CPU','Retrying with WASM…');
+      depthPipe=await pipeline('depth-estimation',MODEL_ID,{device:'wasm',dtype:'q8',progress_callback:onProgress});
+      depthBackend='wasm';
+    }else throw err;
+  }
+  return depthPipe;
+}
+function rawToCanvas(raw){
+  const {data,width,height}=raw; const ch=raw.channels||1;
+  const cvs=document.createElement('canvas');cvs.width=width;cvs.height=height;
+  const ctx=cvs.getContext('2d');const id=ctx.createImageData(width,height);const o=id.data;
+  for(let i=0;i<width*height;i++){const v=data[i*ch];o[i*4]=v;o[i*4+1]=v;o[i*4+2]=v;o[i*4+3]=255;}
+  ctx.putImageData(id,0,0);return cvs;
+}
+let inferring=false;
+async function runDepth(){
+  if(!S.loaded||inferring)return;
+  inferring=true;document.getElementById('btnDepth').disabled=true;
+  try{
+    const pipe=await ensureModel();
+    setModel('run',depthBackend==='webgpu'?'Analyzing depth · WebGPU':'Analyzing depth · CPU',
+      'Estimating the distance of every pixel…');setBar(0,true);
+    const t0=performance.now();
+    const src=workingBlobURL||cv.toDataURL();
+    const out=await pipe(src);
+    const dt=((performance.now()-t0)/1000).toFixed(1);
+    let rc;
+    if(out.depth&&typeof out.depth.toCanvas==='function')rc=out.depth.toCanvas();
+    else if(out.depth)rc=rawToCanvas(out.depth);
+    else throw new Error('Unexpected model output.');
+    applyDepthImage(rc,true);          // Depth Anything: near=white -> invert to near=dark
+    depthReady=true;
+    setModel('ok','Depth ready · '+(depthBackend==='webgpu'?'WebGPU':'CPU')+' · '+dt+' s',
+      'Check it with “Depth”. If something is off, refine by hand or continue to focus.');
+    setBar(100,false);setViewMode('depth');
+    setStageHint('This is how the AI sees the scene · continue to focus when ready');
+  }catch(err){
+    setModel('err','Could not analyze','<b>'+(err&&err.message?err.message:'Error')+'</b><br>Alternative: open “Refine by hand” and mark depth with the brush.');
+    setBar(0,false);document.getElementById('refineWrap').open=true;
+  }finally{
+    inferring=false;document.getElementById('btnDepth').disabled=false;
+  }
+}
+
+/* ---------- layout / overlay sync ---------- */
+function syncOverlaySize(){
+  if(!S.loaded)return;
+  const r=cv.getBoundingClientRect(),fr=document.getElementById('frame').getBoundingClientRect();
+  overlay.style.left=(r.left-fr.left)+'px';overlay.style.top=(r.top-fr.top)+'px';
+  overlay.style.width=r.width+'px';overlay.style.height=r.height+'px';
+}
+window.addEventListener('resize',()=>{if(S.loaded){syncOverlaySize();placeReticle(false);}});
+
+/* ---------- painting ---------- */
+const undoStack=[];
+function pushUndo(){if(undoStack.length>=10)undoStack.shift();undoStack.push(dctx.getImageData(0,0,depthCanvas.width,depthCanvas.height));}
+function toXY(e){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width*cv.width,(e.clientY-r.top)/r.height*cv.height];}
+function stamp(x,y){const r=brush.size,v=Math.round(brush.depth*255),col=v+','+v+','+v;
+  const g=dctx.createRadialGradient(x,y,0,x,y,r);const hard=Math.min(.96,brush.hard);
+  g.addColorStop(0,'rgb('+col+')');g.addColorStop(hard,'rgb('+col+')');g.addColorStop(1,'rgba('+col+',0)');
+  dctx.fillStyle=g;dctx.beginPath();dctx.arc(x,y,r,0,7);dctx.fill();}
+let painting=false,lastXY=null;
+function paintTo(x,y){if(lastXY){const dx=x-lastXY[0],dy=y-lastXY[1],d=Math.hypot(dx,dy),s=Math.max(1,brush.size*.3);
+  for(let t=s;t<d;t+=s)stamp(lastXY[0]+dx*t/d,lastXY[1]+dy*t/d);}stamp(x,y);lastXY=[x,y];
+  octx.clearRect(0,0,overlay.width,overlay.height);octx.drawImage(depthCanvas,0,0);}
+
+const brushcur=document.getElementById('brushcur');
+cv.addEventListener('pointerdown',e=>{
+  if(!S.loaded)return;cv.setPointerCapture(e.pointerId);const[x,y]=toXY(e);
+  if(mode==='paint'){painting=true;pushUndo();lastXY=null;paintTo(x,y);}
+  else setFocusAt(x,y,e);
+});
+cv.addEventListener('pointermove',e=>{if(!S.loaded)return;
+  if(mode==='paint'){moveBrush(e);if(painting){const[x,y]=toXY(e);paintTo(x,y);}}});
+function endStroke(){if(painting){painting=false;lastXY=null;uploadDepth();depthReady=true;}}
+cv.addEventListener('pointerup',endStroke);cv.addEventListener('pointercancel',endStroke);
+cv.addEventListener('pointerleave',()=>brushcur.classList.remove('on'));
+function moveBrush(e){const r=cv.getBoundingClientRect(),fr=document.getElementById('frame').getBoundingClientRect();
+  const scale=r.width/cv.width;
+  const d=brush.size*2*scale;brushcur.style.width=d+'px';brushcur.style.height=d+'px';
+  brushcur.style.left=(e.clientX-fr.left)+'px';brushcur.style.top=(e.clientY-fr.top)+'px';
+  brushcur.classList.add('on');}
+
+/* ---------- focus pick ---------- */
+const reticle=document.getElementById('reticle');
+function placeReticle(pulse,cx,cy){const r=cv.getBoundingClientRect(),fr=document.getElementById('frame').getBoundingClientRect();
+  if(cx==null){cx=r.width*0.5;cy=r.height*0.5;}
+  reticle.style.left=((r.left-fr.left)+cx)+'px';reticle.style.top=((r.top-fr.top)+cy)+'px';
+  reticle.classList.add('on');if(pulse){reticle.classList.remove('pulse');void reticle.offsetWidth;reticle.classList.add('pulse');}}
+function sampleDepthAt(x,y){
+  // median over a small disk: robust to map noise and edge pixels,
+  // like a camera's zone AF instead of a 1px spot
+  const R=Math.max(3,Math.round(Math.min(depthCanvas.width,depthCanvas.height)*0.008));
+  const x0=Math.max(0,Math.round(x)-R), y0=Math.max(0,Math.round(y)-R);
+  const w=Math.min(depthCanvas.width-x0,2*R+1), h=Math.min(depthCanvas.height-y0,2*R+1);
+  if(w<1||h<1)return 0.5;
+  const d=dctx.getImageData(x0,y0,w,h).data;
+  const cxr=x-x0, cyr=y-y0, vals=[];
+  for(let j=0;j<h;j++)for(let i=0;i<w;i++){
+    const dx=i-cxr, dy=j-cyr;
+    if(dx*dx+dy*dy<=R*R)vals.push(d[(j*w+i)*4]);
+  }
+  if(!vals.length)return 0.5;
+  vals.sort((a,b)=>a-b);
+  return vals[vals.length>>1]/255;
+}
+function setFocusAt(x,y,e){
+  const d=sampleDepthAt(x,y);S.focusZ=d;
+  const r=cv.getBoundingClientRect();placeReticle(true,(e.clientX-r.left),(e.clientY-r.top));
+  const lbl=d<.33?'foreground':d<.66?'mid-ground':'background';
+  document.getElementById('focusVal').textContent='depth '+d.toFixed(2)+' · '+lbl;render();}
+
+/* ---------- stage hint ---------- */
+let ht;function setStageHint(t){const el=document.getElementById('stagehint');el.textContent=t;el.style.opacity='1';
+  clearTimeout(ht);ht=setTimeout(()=>el.style.opacity='0',3000);}
+
+/* ---------- steps ---------- */
+function unlockSteps(){document.getElementById('node2').disabled=false;document.getElementById('node3').disabled=false;}
+function goStep(n){
+  step=n;
+  for(let i=1;i<=3;i++){
+    document.getElementById('step'+i).classList.toggle('show',i===n);
+    const nd=document.getElementById('node'+i);
+    nd.classList.toggle('on',i===n);nd.classList.toggle('done',i<n);
+  }
+  if(n===3){mode='focus';paintEnabled=false;setViewMode('photo');
+    document.getElementById('stage').className='stage focus';
+    reticle.classList.add('on');placeReticle(false);setStageHint('Tap what you want sharp');}
+  else if(n===2){mode='focus';reticle.classList.remove('on');
+    document.getElementById('stage').className='stage focus';setStageHint('Analyze depth, or refine it by hand');}
+  else reticle.classList.remove('on');
+  requestAnimationFrame(()=>syncOverlaySize());
+  render();
+}
+document.querySelectorAll('.node').forEach(b=>b.addEventListener('click',()=>{if(!b.disabled)goStep(+b.dataset.step);}));
+
+/* ---------- view toggle (photo/depth) ---------- */
+function setViewMode(v){
+  viewMode=v;
+  [...document.querySelectorAll('#viewSeg button')].forEach(x=>x.classList.toggle('on',x.dataset.v===v));
+  if(v==='depth')refreshOverlay('full');
+  else if(mode==='paint')refreshOverlay('semi');
+  else refreshOverlay(null);
+}
+document.getElementById('viewSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setViewMode(b.dataset.v);});
+
+/* ---------- refine paint controls ---------- */
+const $=id=>document.getElementById(id);
+$('btnPaintOn').addEventListener('click',()=>{
+  paintEnabled=!paintEnabled;mode=paintEnabled?'paint':'focus';
+  $('btnPaintOn').textContent=paintEnabled?'Brush on ✓':'Enable brush';
+  document.getElementById('stage').className='stage '+(paintEnabled?'paint':'focus');
+  if(paintEnabled){setViewMode('photo');refreshOverlay('semi');setStageHint('Paint near (dark) / far (light)');}
+  else refreshOverlay(viewMode==='depth'?'full':null);
+});
+$('depth').addEventListener('input',e=>{brush.depth=e.target.value/100;
+  $('depthVal').textContent=brush.depth<.25?'near':brush.depth<.7?'mid':'far';});
+$('bsize').addEventListener('input',e=>{brush.size=+e.target.value;$('sizeVal').textContent=e.target.value;});
+$('bhard').addEventListener('input',e=>{brush.hard=e.target.value/100;
+  $('hardVal').textContent=brush.hard<.35?'soft':brush.hard<.7?'medium':'hard';});
+$('btnInvert').addEventListener('click',()=>{if(!S.loaded)return;pushUndo();
+  const w=depthCanvas.width,h=depthCanvas.height,id=dctx.getImageData(0,0,w,h),d=id.data;
+  for(let i=0;i<d.length;i+=4){const v=255-d[i];d[i]=d[i+1]=d[i+2]=v;}dctx.putImageData(id,0,0);
+  uploadDepth();if(viewMode==='depth')refreshOverlay('full');else if(mode==='paint')refreshOverlay('semi');setStageHint('Map inverted');});
+$('btnSmooth').addEventListener('click',()=>{if(!S.loaded)return;pushUndo();
+  const t=document.createElement('canvas');t.width=depthCanvas.width;t.height=depthCanvas.height;
+  const tx=t.getContext('2d');tx.filter='blur(6px)';tx.drawImage(depthCanvas,0,0);
+  dctx.clearRect(0,0,t.width,t.height);dctx.drawImage(t,0,0);uploadDepth();
+  if(viewMode==='depth')refreshOverlay('full');else if(mode==='paint')refreshOverlay('semi');setStageHint('Edges smoothed');});
+$('btnUndo').addEventListener('click',()=>{if(!undoStack.length)return;dctx.putImageData(undoStack.pop(),0,0);uploadDepth();
+  if(viewMode==='depth')refreshOverlay('full');else if(mode==='paint')refreshOverlay('semi');});
+
+/* ---------- aperture ---------- */
+const stopsEl=$('stops'),notchEl=$('notch');
+STOPS.forEach((s,i)=>{const d=document.createElement('div');d.className='stop';d.textContent=s.f;d.dataset.i=i;stopsEl.appendChild(d);});
+function setAperture(i){apIndex=i;S.maxCoC=STOPS[i].coc;$('apVal').textContent='f/'+STOPS[i].f;
+  [...stopsEl.children].forEach((el,k)=>el.classList.toggle('sel',k===i));
+  notchEl.style.left=(i/(STOPS.length-1))*100+'%';render();}
+stopsEl.addEventListener('click',e=>{const t=e.target.closest('.stop');if(t)setAperture(+t.dataset.i);});
+setAperture(apIndex);
+
+/* ---------- focus controls ---------- */
+$('range').addEventListener('input',e=>{S.rangeZ=e.target.value/100;$('rangeVal').textContent=e.target.value+'%';render();});
+$('fall').addEventListener('input',e=>{S.falloff=e.target.value/100;const v=+e.target.value;
+  $('fallVal').textContent=v<120?'abrupt':v<210?'soft':'gradual';render();});
+$('hl').addEventListener('input',e=>{S.highlight=e.target.value/100;const v=+e.target.value;
+  $('hlVal').textContent=v<15?'flat':v<70?'medium':'strong';render();});
+$('bladeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  [...e.currentTarget.children].forEach(x=>x.classList.remove('on'));b.classList.add('on');S.blades=+b.dataset.b;render();});
+$('zoneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  [...e.currentTarget.children].forEach(x=>x.classList.remove('on'));b.classList.add('on');S.zone=+b.dataset.z;render();
+  if(S.zone)setStageHint('Bright = in focus · tap the photo to move it');});
+
+/* ---------- compare / save ---------- */
+const cmp=$('btnCompare');
+cmp.addEventListener('pointerdown',()=>{S.bypass=1;render();});
+['pointerup','pointerleave','pointercancel'].forEach(ev=>cmp.addEventListener(ev,()=>{S.bypass=0;render();}));
+$('btnSave').addEventListener('click',()=>{const ps=step,pz=S.zone;step=3;S.bypass=0;S.zone=0;render();
+  cv.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='deeprobin-'+Date.now()+'.png';a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);step=ps;S.zone=pz;render();},'image/png');});
+
+/* ---------- nav ---------- */
+$('btnDepth').addEventListener('click',runDepth);
+$('btnToFocus').addEventListener('click',()=>goStep(3));
+
+/* ---------- file / demo ---------- */
+function openFile(){$('file').click();}
+['btnOpen1','btnOpen2'].forEach(id=>$(id).addEventListener('click',openFile));
+$('file').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;
+  const img=new Image();img.onload=()=>loadBitmap(img);img.src=URL.createObjectURL(f);e.target.value='';});
+const drop=$('drop');
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hot');}));
+drop.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f&&f.type.startsWith('image')){const img=new Image();img.onload=()=>loadBitmap(img);img.src=URL.createObjectURL(f);}});
+
+/* ---------- about ---------- */
+$('btnAbout').addEventListener('click',()=>$('modal').classList.add('show'));
+$('btnClose').addEventListener('click',()=>$('modal').classList.remove('show'));
+$('modal').addEventListener('click',e=>{if(e.target.id==='modal')$('modal').classList.remove('show');});
+window.addEventListener('keydown',e=>{if(e.key==='Escape')$('modal').classList.remove('show');});
+</script>
+</body>
+</html>
